@@ -25,9 +25,12 @@ import numpy as np
 import tensorflow.compat.v2 as tf
 
 from trax.tf_numpy.numpy import array_creation
+from trax.tf_numpy.numpy import array_methods
 from trax.tf_numpy.numpy import dtypes
 from trax.tf_numpy.numpy import utils
+from trax.tf_numpy.numpy.array_creation import asarray
 from trax.tf_numpy.numpy.array_creation import promote_args_types
+from trax.tf_numpy.numpy.array_methods import reshape
 
 
 def dot(a, b):
@@ -112,6 +115,38 @@ def multiply(x1, x2):
   return _bin_op(mul_or_and, x1, x2)
 
 
+@utils.np_doc(np.true_divide)
+def true_divide(x1, x2):
+  def f(x1, x2):
+    if x1.dtype == tf.bool:
+      float_ = dtypes.default_float_type()
+      x1 = tf.cast(x1, float_)
+      x2 = tf.cast(x2, float_)
+    return tf.math.truediv(x1, x2)
+  return _bin_op(f, x1, x2)
+
+
+divide = true_divide
+
+
+@utils.np_doc(np.floor_divide)
+def floor_divide(x1, x2):
+  return _bin_op(tf.math.floordiv, x1, x2)
+
+
+@utils.np_doc(np.mod)
+def mod(x1, x2):
+  return _bin_op(tf.math.mod, x1, x2)
+
+
+remainder = mod
+
+
+@utils.np_doc(np.divmod)
+def divmod(x1, x2):
+  return floor_divide(x1, x2), mod(x1, x2)
+
+
 @utils.np_doc(np.maximum)
 def maximum(x1, x2):
   def max_or_or(x1, x2):
@@ -151,6 +186,83 @@ def arctan2(x1, x2):
   return _bin_op(tf.math.atan2, x1, x2)
 
 
+@utils.np_doc(np.nextafter)
+def nextafter(x1, x2):
+  return _bin_op(tf.math.nextafter, x1, x2)
+
+
+@utils.np_doc(np.heaviside)
+def heaviside(x1, x2):
+  def f(x1, x2):
+    return tf.where(x1 < 0, tf.zeros_like(x2),
+                    tf.where(x1 > 0, tf.ones_like(x2), x2))
+  return _bin_op(f, x1, x2)
+
+
+@utils.np_doc(np.hypot)
+def hypot(x1, x2):
+  return sqrt(x1 * x1 + x2 * x2)
+
+
+def _pad_left_to(n, old_shape):
+  return (1,) * (n - len(old_shape)) + old_shape
+
+
+@utils.np_doc(np.kron)
+def kron(a, b):
+  a, b = promote_args_types(a, b)
+  ndim = __builtins__["max"](a.ndim, b.ndim)
+  if a.ndim < ndim:
+    a = reshape(a, _pad_left_to(ndim, a.shape))
+  if b.ndim < ndim:
+    b = reshape(b, _pad_left_to(ndim, b.shape))
+  a_reshaped = reshape(a, [i for d in a.shape for i in (d, 1)])
+  b_reshaped = reshape(b, [i for d in b.shape for i in (1, d)])
+  out_shape = tuple(np.multiply(a.shape, b.shape))
+  return reshape(a_reshaped * b_reshaped, out_shape)
+
+
+@utils.np_doc(np.outer)
+def outer(a, b):
+  def f(a, b):
+    return tf.reshape(a, [-1, 1]) * array_methods.ravel(b)
+  return _bin_op(f, a, b)
+
+
+# This can also be implemented via tf.reduce_logsumexp
+@utils.np_doc(np.logaddexp)
+def logaddexp(x1, x2):
+  amax = maximum(x1, x2)
+  delta = x1 - x2
+  return array_methods.where(
+      isnan(delta),
+      x1 + x2,  # NaNs or infinities of the same sign.
+      amax + log1p(exp(-abs(delta))))
+
+
+@utils.np_doc(np.logaddexp2)
+def logaddexp2(x1, x2):
+  amax = maximum(x1, x2)
+  delta = x1 - x2
+  return array_methods.where(
+      isnan(delta),
+      x1 + x2,  # NaNs or infinities of the same sign.
+      amax + log1p(exp2(-abs(delta))) / np.log(2))
+
+
+@utils.np_doc(np.polyval)
+def polyval(p, x):
+  def f(p, x):
+    p = tf.unstack(p)
+    y = tf.math.polyval(p, x)
+    # If the polynomial is 0-order, numpy requires the result to be broadcast to
+    # `x`'s shape.
+    if len(p) == 1:
+      y = tf.broadcast_to(y, x.shape)
+    return y
+  return _bin_op(f, p, x)
+
+
 def _scalar(tf_fn, x, promote_to_float=False):
   """Computes the tf_fn(x) for each element in `x`.
 
@@ -167,7 +279,7 @@ def _scalar(tf_fn, x, promote_to_float=False):
     floating point type, in which case the output type is same as x.dtype.
   """
   x = array_creation.asarray(x)
-  if promote_to_float and x.dtype not in (np.float16, np.float32, np.float64):
+  if promote_to_float and not np.issubdtype(x.dtype, np.floating):
     x = x.astype(dtypes.default_float_type())
   return utils.tensor_to_ndarray(tf_fn(x.data))
 
@@ -294,6 +406,204 @@ def arccosh(x):
 @utils.np_doc(np.arctanh)
 def arctanh(x):
   return _scalar(tf.math.atanh, x, True)
+
+
+@utils.np_doc(np.deg2rad)
+def deg2rad(x):
+  def f(x):
+    return x * np.pi / 180.0
+  return _scalar(f, x, True)
+
+
+@utils.np_doc(np.rad2deg)
+def rad2deg(x):
+  return x * 180 / asarray(np.pi)
+
+
+_tf_float_types = [tf.bfloat16, tf.float16, tf.float32, tf.float64]
+
+
+@utils.np_doc(np.angle)
+def angle(z, deg=False):
+  def f(x):
+    if x.dtype in _tf_float_types:
+      # Workaround for b/147515503
+      return tf.where(x < 0, np.pi, 0)
+    else:
+      return tf.math.angle(x)
+  y = _scalar(f, z, True)
+  if deg:
+    y = rad2deg(y)
+  return y
+
+
+@utils.np_doc(np.cbrt)
+def cbrt(x):
+  def f(x):
+    # __pow__ can't handle negative base, so we use `abs` here.
+    rt = tf.math.abs(x) ** (1.0 / 3)
+    return tf.where(x < 0, -rt, rt)
+  return _scalar(f, x, True)
+
+
+@utils.np_doc(np.conjugate)
+def conjugate(x):
+  return _scalar(tf.math.conj, x, True)
+
+
+@utils.np_doc(np.exp2)
+def exp2(x):
+  def f(x):
+    return 2 ** x
+  return _scalar(f, x, True)
+
+
+@utils.np_doc(np.expm1)
+def expm1(x):
+  return _scalar(tf.math.expm1, x, True)
+
+
+@utils.np_doc(np.fix)
+def fix(x):
+  def f(x):
+    return tf.where(x < 0, tf.math.ceil(x), tf.math.floor(x))
+  return _scalar(f, x, True)
+
+
+@utils.np_doc(np.iscomplex)
+def iscomplex(x):
+  return array_methods.imag(x) != 0
+
+
+@utils.np_doc(np.isreal)
+def isreal(x):
+  return array_methods.imag(x) == 0
+
+
+@utils.np_doc(np.iscomplexobj)
+def iscomplexobj(x):
+  x = asarray(x)
+  return np.issubdtype(x.dtype, np.complexfloating)
+
+
+@utils.np_doc(np.isrealobj)
+def isrealobj(x):
+  return not iscomplexobj(x)
+
+
+@utils.np_doc(np.isnan)
+def isnan(x):
+  return _scalar(tf.math.is_nan, x, True)
+
+
+@utils.np_doc(np.isfinite)
+def isfinite(x):
+  return _scalar(tf.math.is_finite, x, True)
+
+
+@utils.np_doc(np.isinf)
+def isinf(x):
+  return _scalar(tf.math.is_inf, x, True)
+
+
+@utils.np_doc(np.isneginf)
+def isneginf(x):
+  return x == array_creation.full_like(x, -np.inf)
+
+
+@utils.np_doc(np.isposinf)
+def isposinf(x):
+  return x == array_creation.full_like(x, np.inf)
+
+
+@utils.np_doc(np.log2)
+def log2(x):
+  return log(x) / np.log(2)
+
+
+@utils.np_doc(np.log10)
+def log10(x):
+  return log(x) / np.log(10)
+
+
+@utils.np_doc(np.log1p)
+def log1p(x):
+  return _scalar(tf.math.log1p, x, True)
+
+
+@utils.np_doc(np.positive)
+def positive(x):
+  return _scalar(lambda x: x, x, True)
+
+
+@utils.np_doc(np.sinc)
+def sinc(x):
+  def f(x):
+    pi_x = x * np.pi
+    return tf.where(x == 0, tf.ones_like(x), tf.math.sin(pi_x) / pi_x)
+  return _scalar(f, x, True)
+
+
+@utils.np_doc(np.square)
+def square(x):
+  return x * x
+
+
+@utils.np_doc(np.diff)
+def diff(a, n=1, axis=-1):
+  def f(a):
+    nd = a.shape.rank
+    if (axis + nd if axis < 0 else axis) >= nd:
+      raise ValueError("axis %s is out of bounds for array of dimension %s" %
+                       (axis, nd))
+    if n < 0:
+      raise ValueError("order must be non-negative but got %s" % n)
+    slice1 = [slice(None)] * nd
+    slice2 = [slice(None)] * nd
+    slice1[axis] = slice(1, None)
+    slice2[axis] = slice(None, -1)
+    slice1 = tuple(slice1)
+    slice2 = tuple(slice2)
+    op = tf.not_equal if a.dtype == tf.bool else tf.subtract
+    for _ in range(n):
+      a = op(a[slice1], a[slice2])
+    return a
+  return _scalar(f, a)
+
+
+def _atleast_nd(n, new_shape, *arys):
+  def f(x):
+    x = asarray(x)
+    if x.ndim < n:
+      x = reshape(x, new_shape(n, x.shape))
+    return x
+  arys = list(map(f, arys))
+  if len(arys) == 1:
+    return arys[0]
+  else:
+    return arys
+
+
+@utils.np_doc(np.atleast_1d)
+def atleast_1d(*arys):
+  return _atleast_nd(1, _pad_left_to, *arys)
+
+
+@utils.np_doc(np.atleast_2d)
+def atleast_2d(*arys):
+  return _atleast_nd(2, _pad_left_to, *arys)
+
+
+@utils.np_doc(np.atleast_3d)
+def atleast_3d(*arys):
+  def new_shape(_, old_shape):
+    ndim = len(old_shape)
+    if ndim == 0:
+      return (1, 1, 1)
+    elif ndim == 1:
+      return (1,) + old_shape + (1,)
+    return old_shape + (1,)
+  return _atleast_nd(3, new_shape, *arys)
 
 
 @utils.np_doc(np.sum)

@@ -329,6 +329,9 @@ class ndarray(object):  # pylint: disable=invalid-name
   def __str__(self):
     return 'ndarray<{}>'.format(self.data.__str__())
 
+  def __repr__(self):
+    return 'ndarray<{}>'.format(self.data.__repr__())
+
 
 def tensor_to_ndarray(tensor):
   return ndarray(tensor._shape_tuple(), dtype=tensor.dtype, buffer=tensor)  # pylint: disable=protected-access
